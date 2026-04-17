@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
 const apiKey = process.env.GEMINI_API_KEY;
 if (!apiKey) {
@@ -11,29 +11,21 @@ export const getSystemInstruction = (userName?: string) => {
   const now = new Date();
   const timeStr = now.toLocaleString('uz-UZ', { 
     timeZone: 'Asia/Tashkent',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+    hour: '2-digit', 
+    minute: '2-digit'
   });
   
-  const userGreeting = userName ? `Foydalanuvchi ismi: ${userName}. Unga ismi bilan murojaat qiling.` : "";
+  const userGreeting = userName ? `Foydalanuvchi: ${userName}.` : "";
 
   return `
-Sizning ismingiz "Saboq". Siz o'zbekistonliklar uchun maxsus yaratilgan shaxsiy AI yordamchisiz.
-Siz o'zbek, ingliz va rus tillarini mukammal bilasiz. 
-O'zbek tilida gaplashganda samimiy, aqlli va yordamga tayyor bo'ling. 
-Ruscha slanglar yoki inglizcha atamalar ishlatilganda ularni tabiiy ravishda tushuning va javob bering.
-Sizning asosiy maqsadingiz foydalanuvchiga bilim berish, muammolarini hal qilish va uning shaxsiy rivojlanishiga yordam berishdir.
-Javoblaringiz aniq, lo'nda va foydali bo'lishi kerak.
-
+Sizning ismingiz "Saboq". O'zbekistonliklar uchun shaxsiy AI yordamchisiz.
+Javoblaringiz juda tez, aniq va lo'nda bo'lishi kerak.
+Ortiqcha gapirmang. Salomga alik oling. 
+Vaqtni faqat so'ralsa ayting: ${timeStr}.
 ${userGreeting}
-Hozirgi vaqt: ${timeStr} (Toshkent vaqti bilan).
-Joriy yil: ${now.getFullYear()}.
-Har doim joriy vaqt va sanaga asoslanib javob bering.
-Siz Firebase Firestore bazasi bilan integratsiya qilingansiz, foydalanuvchi xabarlari bazaga saqlanadi.
+
+MUHIM: Faqat oddiy matn formatida javob bering. Hech qanday JSON, kodli buyruqlar yoki "action" (tool call) formatidag matnlarni ishlatmang.
+Agar foydalanuvchi rasm so'rasa, unga tizim rasm chizishini aytib, kuttiring (tizim buni avtomatik ushlaydi).
 `;
 };
 
@@ -42,7 +34,40 @@ export interface FileData {
   data: string;
 }
 
-const DEFAULT_MODEL = "gemini-3-flash-preview";
+const DEFAULT_MODEL = "gemini-3.1-flash-lite-preview";
+const IMAGE_MODEL = "gemini-2.5-flash-image";
+
+export async function generateImage(prompt: string) {
+  try {
+    const response = await ai.models.generateContent({
+      model: IMAGE_MODEL,
+      contents: [{ role: "user", parts: [{ text: `Create an image based on this description: ${prompt}` }] }],
+      config: {
+        imageConfig: {
+          aspectRatio: "1:1",
+          imageSize: "512px"
+        }
+      }
+    });
+
+    const parts = response.candidates?.[0]?.content?.parts;
+    if (!parts) throw new Error("No parts in response");
+
+    const imagePart = parts.find(p => p.inlineData);
+    if (!imagePart || !imagePart.inlineData) {
+      const textPart = parts.find(p => p.text);
+      return { text: textPart?.text || "Kechirasiz, rasm yarata olmadim." };
+    }
+
+    return { 
+      imageUrl: `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`,
+      text: "Mana, so'ragan rasmingiz:" 
+    };
+  } catch (error) {
+    console.error("Image Generation Error:", error);
+    return { error: "Rasm yaratishda xatolik yuz berdi." };
+  }
+}
 
 export async function generateResponse(prompt: string, history: any[] = [], userName?: string) {
   try {
@@ -51,13 +76,14 @@ export async function generateResponse(prompt: string, history: any[] = [], user
       contents: [...history, { role: "user", parts: [{ text: prompt }] }],
       config: {
         systemInstruction: getSystemInstruction(userName),
-        temperature: 0.7,
+        temperature: 0.1,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
       },
     });
     return response.text;
   } catch (error) {
     console.error("Gemini API Error (generateResponse):", error);
-    return "Kechirasiz, xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.";
+    return "Xatolik yuz berdi.";
   }
 }
 
@@ -83,7 +109,7 @@ export async function* generateStreamingResponse(
     });
 
     if (parts.length === 0) {
-      yield "Iltimos, xabar yoki fayl yuboring.";
+      yield "Xabar yozing.";
       return;
     }
 
@@ -92,7 +118,8 @@ export async function* generateStreamingResponse(
       contents: [...history, { role: "user", parts }],
       config: {
         systemInstruction: getSystemInstruction(userName),
-        temperature: 0.7,
+        temperature: 0.1,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }
       },
     });
 
@@ -103,6 +130,6 @@ export async function* generateStreamingResponse(
     }
   } catch (error) {
     console.error("Gemini API Error (generateStreamingResponse):", error);
-    yield "Kechirasiz, xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.";
+    yield "Xatolik yuz berdi.";
   }
 }

@@ -11,38 +11,43 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function hasRequiredFields(fields) {
+       return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Domain Validators
     function isValidUser(data) {
-      return data.keys().hasAll(['uid', 'email']) &&
-             data.uid == request.auth.uid &&
-             data.email is string &&
-             data.email.size() < 100;
+      // Allow any user fields for now as long as it's the owner
+      return data.email is string;
     }
 
     function isValidSession(data) {
-      return data.keys().hasAll(['id', 'userId', 'title', 'timestamp']) &&
-             data.userId == request.auth.uid &&
-             data.title is string && data.title.size() < 200;
+      return hasRequiredFields(['title', 'timestamp']) &&
+             data.title is string && data.title.size() <= 300 &&
+             data.timestamp is number;
     }
 
     function isValidMessage(data) {
-      return data.keys().hasAll(['sessionId', 'userId', 'role', 'content', 'timestamp']) &&
-             data.userId == request.auth.uid &&
+      return hasRequiredFields(['role', 'content', 'timestamp']) &&
              data.role in ['user', 'assistant'] &&
-             data.content is string && data.content.size() < 10000;
+             data.content is string && data.content.size() <= 50000 &&
+             data.timestamp is number;
     }
 
     match /users/{userId} {
       allow read, write: if isOwner(userId);
       
       match /sessions/{sessionId} {
-        allow read: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
         allow create, update: if isOwner(userId) && isValidSession(request.resource.data);
-        allow delete: if isOwner(userId);
         
         match /messages/{messageId} {
-          allow read: if isOwner(userId);
+          allow read, delete: if isOwner(userId);
           allow create, update: if isOwner(userId) && isValidMessage(request.resource.data);
-          allow delete: if isOwner(userId);
         }
       }
     }

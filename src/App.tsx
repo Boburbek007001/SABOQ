@@ -10,7 +10,7 @@ import {
   Plus, History, Paperclip, Image as ImageIcon, Square, Trash2, 
   Menu, X, MessageSquare, ChevronRight, LogOut, ShieldCheck, AlertCircle
 } from 'lucide-react';
-import { generateStreamingResponse, FileData } from '@/src/lib/gemini';
+import { generateStreamingResponse, generateImage, FileData } from '@/src/lib/gemini';
 import ReactMarkdown from 'react-markdown';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -137,6 +137,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   files?: FileData[];
+  imageUrl?: string;
   timestamp?: any;
 }
 
@@ -147,10 +148,10 @@ interface ChatSession {
 }
 
 const STATUS_MESSAGES = [
-  "Ma'lumot qidirilmoqda...",
-  "Internetdan izlanmoqda...",
   "Javob tayyorlanmoqda...",
   "O'ylayapman...",
+  "Ma'lumotni tahlil qilyapman...",
+  "Siz uchun javob yozyapman...",
 ];
 
 const SaboqLogo = ({ isGenerating, className }: { isGenerating: boolean, className?: string }) => {
@@ -215,6 +216,9 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   
+  // Local cache for objects that are too large for Firestore (like images)
+  const localCacheRef = useRef<Record<string, Partial<Message>>>({});
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<boolean>(false);
@@ -241,19 +245,37 @@ export default function App() {
 
   // Fetch messages when session changes
   useEffect(() => {
-    if (!user || !currentSessionId) {
+    if (!user) return; // Keep local messages for unauthenticated
+
+    if (!currentSessionId) {
       setMessages([]);
       return;
     }
+
+    // When a session is selected, we clear messages if it's not an optimistic start
+    // (i.e., we are switching chats, not just starting one)
+    setMessages(prev => {
+      // If we're starting a new chat (isGenerating is true and we have messages),
+      // we don't want to clear the optimistic user message.
+      if (isGenerating && prev.length > 0) return prev;
+      return [];
+    });
 
     const messagesRef = collection(db, 'users', user.uid, 'sessions', currentSessionId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'asc'));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Message[];
+      const msgs = snapshot.docs.map(doc => {
+        const data = doc.data() as Message;
+        const cached = localCacheRef.current[doc.id];
+        
+        // Re-attach cached data (like imageUrl or files) if missing from Firestore doc
+        return {
+          id: doc.id,
+          ...data,
+          ...(cached || {})
+        };
+      }) as Message[];
       setMessages(msgs);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/sessions/${currentSessionId}/messages`);
@@ -322,66 +344,127 @@ export default function App() {
     if (!input.trim() && attachedFiles.length === 0) return;
     if (isGenerating) return;
 
+    const currentInput = input;
+    const currentFiles = [...attachedFiles];
+    
+    // Clear input immediately for better UX
+    setInput('');
+    setAttachedFiles([]);
+    setIsGenerating(true);
+    abortControllerRef.current = false;
+
     let sessionId = currentSessionId;
     
     // Create session if it doesn't exist and user is logged in
     if (!sessionId && user) {
       try {
+        const title = currentInput.slice(0, 30) + (currentInput.length > 30 ? '...' : '');
         const sessionRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), {
-          title: input.slice(0, 30) + (input.length > 30 ? '...' : ''),
+          title: title || (currentFiles.length > 0 ? 'Fayl yuborildi' : 'Yangi suhbat'),
           timestamp: Date.now()
         });
         sessionId = sessionRef.id;
         setCurrentSessionId(sessionId);
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions`);
+        setIsGenerating(false);
+        setInput(currentInput); // Restore input on error
         return;
       }
     }
 
     const userMessage: Message = { 
       role: 'user', 
-      content: input,
-      files: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
+      content: currentInput,
       timestamp: Date.now()
     };
-    
-    // Save user message to Firestore
-    if (user) {
-      try {
-        await addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), userMessage);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`);
-      }
-    } else {
-      // For unauthenticated users, we just update local state
-      setMessages(prev => [...prev, userMessage]);
+    if (currentFiles.length > 0) {
+      userMessage.files = [...currentFiles];
     }
     
-    const currentInput = input;
-    const currentFiles = [...attachedFiles];
-    
-    setInput('');
-    setAttachedFiles([]);
-    setIsGenerating(true);
-    abortControllerRef.current = false;
+    // Optimistic update for immediate feedback
+    setMessages(prev => [...prev, userMessage]);
 
+    // Save user message to Firestore (don't await to speed up AI start)
+    if (user && sessionId) {
+      const firestoreUserMessage: any = { ...userMessage };
+      const estimatedSize = JSON.stringify(firestoreUserMessage).length;
+
+      if (estimatedSize > 1000000) {
+        delete firestoreUserMessage.files;
+        firestoreUserMessage.content += "\n\n*(Eslatma: Biriktirilgan fayllar hajmi juda katta bo'lgani uchun tarixda saqlanmadi)*";
+      }
+
+      addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), firestoreUserMessage)
+        .catch(err => handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`));
+    }
+    
     // Context-aware status messages
     const statusInterval = setInterval(() => {
       const pool = currentFiles.length > 0 
-        ? ["Fayllarni tahlil qilmoqdaman...", ...STATUS_MESSAGES]
-        : STATUS_MESSAGES;
+        ? ["Fayllarni tahlil qilmoqdaman...", "Javob yozilmoqda...", "Tayyor..."]
+        : ["Tayyorlanmoqda...", "Yozilmoqda...", "O'ylayapman..."];
       setStatus(pool[Math.floor(Math.random() * pool.length)]);
-    }, 2000);
+    }, 1000);
     
-    setStatus(currentFiles.length > 0 ? "Fayllarni o'qimoqdaman..." : "O'ylayapman...");
+    setStatus(currentFiles.length > 0 ? "Fayllar o'qilmoqda..." : "Tayyorlanmoqda...");
 
     try {
       if (!process.env.GEMINI_API_KEY) {
         throw new Error("API kaliti topilmadi. Iltimos, AI Studio sozlamalaridan (Secrets paneli) GEMINI_API_KEY o'rnatilganligini tekshiring.");
       }
 
-      const history = messages.map(m => {
+      // Enhanced image generation request detection (Uzbek-friendly)
+      const inputLower = currentInput.toLowerCase();
+      const hasImageFocus = inputLower.includes('rasm') || inputLower.includes('tasvir') || inputLower.includes('rasim') || inputLower.includes('surat');
+      const hasCreateAction = inputLower.includes('chiz') || inputLower.includes('yarat') || inputLower.includes('generate') || inputLower.includes('tayyorla') || inputLower.includes('ko\'rsat') || inputLower.includes('ber');
+      
+      const isImageRequest = (hasImageFocus && hasCreateAction) || inputLower.includes('paint') || inputLower.includes('draw');
+
+      if (isImageRequest) {
+        setStatus("🎨 Nano Banana 2 rasm chizmoqda...");
+        const result = await generateImage(currentInput);
+        
+        if (result.error) throw new Error(result.error);
+        
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: result.text || "Mana, so'ragan rasmingiz:",
+          imageUrl: result.imageUrl,
+          timestamp: Date.now()
+        };
+
+        if (user && sessionId) {
+          const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          // Prepare message for Firestore (exclude imageUrl if it's too large for 1MB document limit)
+          const firestoreMessage: any = { ...assistantMessage };
+          const estimatedSize = JSON.stringify(firestoreMessage).length;
+          
+          let isStripped = false;
+          if (estimatedSize > 1000000) { // ~1MB limit
+            isStripped = true;
+            delete firestoreMessage.imageUrl;
+            firestoreMessage.content += "\n\n*(Eslatma: Rasm hajmi juda katta bo'lgani uchun tarixda saqlanmadi)*";
+            
+            // Store the original in local cache for the current session
+            localCacheRef.current[messageId] = { imageUrl: assistantMessage.imageUrl };
+          }
+
+          setDoc(doc(db, 'users', user.uid, 'sessions', sessionId, 'messages', messageId), firestoreMessage)
+            .catch(err => handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages/${messageId}`));
+          
+          // If we stripped it, we MUST update state manually because onSnapshot won't have the image
+          // But even if we didn't, setMessages here provides immediate feedback
+          setMessages(prev => [...prev, { ...assistantMessage, id: messageId }]);
+        } else {
+          setMessages(prev => [...prev, assistantMessage]);
+        }
+        return;
+      }
+
+      // Prepare history from CURRENT messages list (including optimistic one)
+      const history = messages.concat(userMessage).map(m => {
         const parts: any[] = [];
         if (m.content.trim()) {
           parts.push({ text: m.content });
@@ -399,7 +482,7 @@ export default function App() {
       
       let assistantContent = '';
       setStreamingContent('');
-      const stream = generateStreamingResponse(currentInput, history, currentFiles, user?.displayName || undefined);
+      const stream = generateStreamingResponse(currentInput, history.slice(0, -1), currentFiles, user?.displayName || undefined);
       
       for await (const chunk of stream) {
         if (abortControllerRef.current) break;
@@ -407,25 +490,24 @@ export default function App() {
         setStreamingContent(assistantContent);
       }
       
-      setStreamingContent('');
-      
       // Save assistant message to Firestore
-      if (assistantContent) {
+      if (assistantContent && !abortControllerRef.current) {
         const assistantMessage: Message = {
           role: 'assistant',
           content: assistantContent,
           timestamp: Date.now()
         };
 
-        if (user) {
-          try {
-            await addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), assistantMessage);
-          } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`);
-          }
-        } else {
-          setMessages(prev => [...prev, assistantMessage]);
+        // Add to local state immediately to avoid the "freeze" while waiting for Firestore/onSnapshot
+        setMessages(prev => [...prev, assistantMessage]);
+        setStreamingContent('');
+
+        if (user && sessionId) {
+          addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), assistantMessage)
+            .catch(err => handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`));
         }
+      } else {
+        setStreamingContent('');
       }
     } catch (error: any) {
       console.error(error);
@@ -639,7 +721,7 @@ export default function App() {
             </div>
             
             <div className="flex items-center gap-3">
-              <div className="hidden sm:flex items-center gap-1 mr-4">
+              <div className="hidden sm:flex items-center gap-1 mr-2 ml-2">
                 <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">UZB</Badge>
                 <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">ENG</Badge>
                 <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">RUS</Badge>
@@ -778,6 +860,16 @@ export default function App() {
                             ? "bg-indigo-600 text-white rounded-tr-none shadow-indigo-200" 
                             : "bg-white border border-slate-100 text-slate-800 rounded-tl-none"
                         )}>
+                          {message.imageUrl && (
+                            <div className="mb-3 overflow-hidden rounded-xl border border-slate-100 shadow-sm">
+                              <img 
+                                src={message.imageUrl} 
+                                alt="Generated" 
+                                className="w-full max-h-[400px] object-contain bg-slate-50"
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                          )}
                           {message.role === 'assistant' ? (
                             <div className="prose prose-slate max-w-none prose-p:leading-relaxed prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:bg-indigo-50 prose-code:px-1 prose-code:rounded prose-strong:text-slate-900 prose-headings:text-slate-900">
                               <ReactMarkdown>{message.content}</ReactMarkdown>
