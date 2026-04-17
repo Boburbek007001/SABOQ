@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid == request.auth.uid &&
+             data.email is string &&
+             data.email.size() < 100;
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() < 200;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['sessionId', 'userId', 'role', 'content', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.role in ['user', 'assistant'] &&
+             data.content is string && data.content.size() < 10000;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+      
+      match /sessions/{sessionId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidSession(request.resource.data);
+        allow delete: if isOwner(userId);
+        
+        match /messages/{messageId} {
+          allow read: if isOwner(userId);
+          allow create, update: if isOwner(userId) && isValidMessage(request.resource.data);
+          allow delete: if isOwner(userId);
+        }
+      }
+    }
+  }
+}

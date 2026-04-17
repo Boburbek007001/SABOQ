@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Send, User, Bot, Sparkles, Loader2, Search, FileText, Globe, 
   Plus, History, Paperclip, Image as ImageIcon, Square, Trash2, 
-  Menu, X, MessageSquare, ChevronRight
+  Menu, X, MessageSquare, ChevronRight, LogOut, ShieldCheck, AlertCircle
 } from 'lucide-react';
 import { generateStreamingResponse, FileData } from '@/src/lib/gemini';
 import ReactMarkdown from 'react-markdown';
@@ -22,17 +22,127 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { auth, db } from '@/src/lib/firebase';
+import { useAuthState } from 'react-firebase-hooks/auth';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  onSnapshot, 
+  doc, 
+  setDoc, 
+  deleteDoc,
+  serverTimestamp,
+  getDocs,
+  limit,
+  getDocFromCache,
+  getDocFromServer
+} from 'firebase/firestore';
+import Auth from './components/Auth';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, errorInfo: string | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let displayMessage = "Kechirasiz, xatolik yuz berdi.";
+      try {
+        const parsed = JSON.parse(this.state.errorInfo || '');
+        if (parsed.error && parsed.error.includes('permissions')) {
+          displayMessage = "Sizda ushbu amalni bajarish uchun ruxsat yo'q. Iltimos, qaytadan tizimga kiring.";
+        }
+      } catch (e) {
+        // Not a JSON error
+      }
+
+      return (
+        <div className="h-screen flex flex-col items-center justify-center p-6 text-center bg-slate-50">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-6">
+            <AlertCircle className="w-8 h-8 text-red-600" />
+          </div>
+          <h2 className="text-2xl font-bold text-slate-900 mb-2">{displayMessage}</h2>
+          <p className="text-slate-500 mb-8 max-w-md">Tizimda kutilmagan xatolik yuz berdi. Muammo davom etsa, iltimos biz bilan bog'laning.</p>
+          <Button onClick={() => window.location.reload()} className="bg-indigo-600 hover:bg-indigo-700 rounded-2xl px-8 h-12 font-bold">
+            Sahifani yangilash
+          </Button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 interface Message {
+  id?: string;
   role: 'user' | 'assistant';
   content: string;
   files?: FileData[];
+  timestamp?: any;
 }
 
 interface ChatSession {
   id: string;
   title: string;
-  messages: Message[];
   timestamp: number;
 }
 
@@ -43,37 +153,56 @@ const STATUS_MESSAGES = [
   "O'ylayapman...",
 ];
 
-const SaboqLogo = ({ isGenerating }: { isGenerating: boolean }) => {
+const SaboqLogo = ({ isGenerating, className }: { isGenerating: boolean, className?: string }) => {
   return (
     <motion.div
       animate={isGenerating ? {
-        scale: [1, 1.15, 1],
-        rotate: [0, 10, -10, 0],
-        filter: ["drop-shadow(0 0 0px rgba(99, 102, 241, 0))", "drop-shadow(0 0 15px rgba(99, 102, 241, 0.5))", "drop-shadow(0 0 0px rgba(99, 102, 241, 0))"]
+        rotate: 360,
       } : {}}
       transition={isGenerating ? {
-        duration: 2,
+        duration: 3,
         repeat: Infinity,
-        ease: "easeInOut"
+        ease: "linear"
       } : {}}
-      className="relative flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-600 via-violet-600 to-purple-600 shadow-lg shadow-indigo-500/30"
+      className={cn(
+        "relative flex items-center justify-center rounded-2xl bg-white shadow-xl shadow-indigo-500/10 overflow-hidden",
+        className || "w-12 h-12"
+      )}
     >
-      <Sparkles className="w-6 h-6 text-white" />
-      <AnimatePresence>
-        {isGenerating && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.5 }}
-            animate={{ opacity: 1, scale: 1.5 }}
-            exit={{ opacity: 0, scale: 0.5 }}
-            className="absolute -inset-2 rounded-3xl border-2 border-indigo-400/20 blur-md"
-          />
-        )}
-      </AnimatePresence>
+      <svg viewBox="0 0 100 100" className="w-10 h-10">
+        <defs>
+          <linearGradient id="swirlGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#4f46e5" />
+            <stop offset="100%" stopColor="#9333ea" />
+          </linearGradient>
+        </defs>
+        <motion.path
+          d="M50 10 C 70 10, 90 30, 90 50 C 90 70, 70 90, 50 90 C 30 90, 10 70, 10 50 C 10 30, 30 10, 50 10 Z M50 25 C 65 25, 75 35, 75 50 C 75 65, 65 75, 50 75 C 35 75, 25 65, 25 50 C 25 35, 35 25, 50 25 Z"
+          fill="url(#swirlGrad)"
+          animate={isGenerating ? {
+            scale: [1, 1.1, 1],
+            opacity: [0.8, 1, 0.8],
+          } : {}}
+          transition={{ duration: 2, repeat: Infinity }}
+        />
+        <motion.path
+          d="M50 35 Q 65 35, 65 50 T 50 65 Q 35 65, 35 50 T 50 35"
+          fill="white"
+          animate={isGenerating ? {
+            scale: [0.8, 1.2, 0.8],
+          } : {}}
+          transition={{ duration: 1.5, repeat: Infinity }}
+        />
+      </svg>
+      {isGenerating && (
+        <div className="absolute inset-0 bg-indigo-500/10 animate-pulse" />
+      )}
     </motion.div>
   );
 };
 
 export default function App() {
+  const [user, userLoading] = useAuthState(auth);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -81,31 +210,57 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<FileData[]>([]);
+  const [streamingContent, setStreamingContent] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<boolean>(false);
 
-  // Load history from localStorage
+  // Fetch sessions from Firestore
   useEffect(() => {
-    const saved = localStorage.getItem('saboq_history');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setSessions(parsed);
-      } catch (e) {
-        console.error("Failed to parse history", e);
-      }
-    }
-  }, []);
+    if (!user) return;
 
-  // Save history to localStorage
+    const sessionsRef = collection(db, 'users', user.uid, 'sessions');
+    const q = query(sessionsRef, orderBy('timestamp', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const sess = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ChatSession[];
+      setSessions(sess);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/sessions`);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Fetch messages when session changes
   useEffect(() => {
-    if (sessions.length > 0) {
-      localStorage.setItem('saboq_history', JSON.stringify(sessions));
+    if (!user || !currentSessionId) {
+      setMessages([]);
+      return;
     }
-  }, [sessions]);
+
+    const messagesRef = collection(db, 'users', user.uid, 'sessions', currentSessionId, 'messages');
+    const q = query(messagesRef, orderBy('timestamp', 'asc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Message[];
+      setMessages(msgs);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/sessions/${currentSessionId}/messages`);
+    });
+
+    return () => unsubscribe();
+  }, [user, currentSessionId]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -114,44 +269,27 @@ export default function App() {
   }, [messages, isGenerating, status]);
 
   const startNewChat = () => {
-    if (messages.length > 0 && !currentSessionId) {
-      saveCurrentSession();
-    }
-    setMessages([]);
     setCurrentSessionId(null);
+    setMessages([]);
     setAttachedFiles([]);
     setIsSidebarOpen(false);
   };
 
-  const saveCurrentSession = () => {
-    if (messages.length === 0) return;
-    
-    const newSession: ChatSession = {
-      id: currentSessionId || Date.now().toString(),
-      title: messages[0].content.slice(0, 30) + (messages[0].content.length > 30 ? '...' : ''),
-      messages: [...messages],
-      timestamp: Date.now()
-    };
-
-    setSessions(prev => {
-      const filtered = prev.filter(s => s.id !== newSession.id);
-      return [newSession, ...filtered];
-    });
-    
-    if (!currentSessionId) setCurrentSessionId(newSession.id);
-  };
-
   const loadSession = (session: ChatSession) => {
-    setMessages(session.messages);
     setCurrentSessionId(session.id);
     setIsSidebarOpen(false);
   };
 
-  const deleteSession = (e: React.MouseEvent, id: string) => {
+  const deleteSession = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setSessions(prev => prev.filter(s => s.id !== id));
-    if (currentSessionId === id) {
-      startNewChat();
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'users', user.uid, 'sessions', id));
+      if (currentSessionId === id) {
+        startNewChat();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `users/${user.uid}/sessions/${id}`);
     }
   };
 
@@ -184,13 +322,42 @@ export default function App() {
     if (!input.trim() && attachedFiles.length === 0) return;
     if (isGenerating) return;
 
+    let sessionId = currentSessionId;
+    
+    // Create session if it doesn't exist and user is logged in
+    if (!sessionId && user) {
+      try {
+        const sessionRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), {
+          title: input.slice(0, 30) + (input.length > 30 ? '...' : ''),
+          timestamp: Date.now()
+        });
+        sessionId = sessionRef.id;
+        setCurrentSessionId(sessionId);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions`);
+        return;
+      }
+    }
+
     const userMessage: Message = { 
       role: 'user', 
       content: input,
-      files: attachedFiles.length > 0 ? [...attachedFiles] : undefined
+      files: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
+      timestamp: Date.now()
     };
     
-    setMessages(prev => [...prev, userMessage]);
+    // Save user message to Firestore
+    if (user) {
+      try {
+        await addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), userMessage);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`);
+      }
+    } else {
+      // For unauthenticated users, we just update local state
+      setMessages(prev => [...prev, userMessage]);
+    }
+    
     const currentInput = input;
     const currentFiles = [...attachedFiles];
     
@@ -231,33 +398,49 @@ export default function App() {
       }).filter(m => m.parts.length > 0);
       
       let assistantContent = '';
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
-      const stream = generateStreamingResponse(currentInput, history, currentFiles);
+      setStreamingContent('');
+      const stream = generateStreamingResponse(currentInput, history, currentFiles, user?.displayName || undefined);
       
       for await (const chunk of stream) {
         if (abortControllerRef.current) break;
         assistantContent += chunk;
-        setMessages(prev => {
-          const last = prev[prev.length - 1];
-          if (last.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, content: assistantContent }];
-          }
-          return prev;
-        });
+        setStreamingContent(assistantContent);
       }
       
-      saveCurrentSession();
+      setStreamingContent('');
+      
+      // Save assistant message to Firestore
+      if (assistantContent) {
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: assistantContent,
+          timestamp: Date.now()
+        };
+
+        if (user) {
+          try {
+            await addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), assistantMessage);
+          } catch (err) {
+            handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages`);
+          }
+        } else {
+          setMessages(prev => [...prev, assistantMessage]);
+        }
+      }
     } catch (error: any) {
       console.error(error);
       const errorMessage = error.message || "Kechirasiz, xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.";
-      setMessages(prev => {
-        const last = prev[prev.length - 1];
-        if (last && last.role === 'assistant' && last.content === '') {
-          return [...prev.slice(0, -1), { role: 'assistant', content: errorMessage }];
-        }
-        return [...prev, { role: 'assistant', content: errorMessage }];
-      });
+      const errorMsg: Message = {
+        role: 'assistant',
+        content: errorMessage,
+        timestamp: Date.now()
+      };
+
+      if (user && sessionId) {
+        await addDoc(collection(db, 'users', user.uid, 'sessions', sessionId, 'messages'), errorMsg);
+      } else {
+        setMessages(prev => [...prev, errorMsg]);
+      }
     } finally {
       clearInterval(statusInterval);
       setIsGenerating(false);
@@ -265,71 +448,159 @@ export default function App() {
     }
   };
 
+  if (userLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-white">
+        <Loader2 className="w-10 h-10 animate-spin text-indigo-600" />
+      </div>
+    );
+  }
+
   return (
-    <TooltipProvider>
+    <ErrorBoundary>
+      <TooltipProvider>
       <div className="flex h-screen bg-[#fafafa] text-slate-900 font-sans selection:bg-indigo-100 overflow-hidden">
         
+        {showAuth && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+            <div className="relative w-full max-w-4xl">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setShowAuth(false)}
+                className="absolute -top-12 right-0 text-white hover:bg-white/20 rounded-full"
+              >
+                <X className="w-6 h-6" />
+              </Button>
+              <Auth initialMode={authMode} onSuccess={() => setShowAuth(false)} />
+            </div>
+          </div>
+        )}
+        
         {/* Desktop Sidebar */}
-        <aside className="hidden md:flex flex-col w-72 bg-white border-r border-slate-200">
-          <div className="p-4">
+        <aside className="hidden md:flex flex-col w-80 bg-white border-r border-slate-100 shadow-[1px_0_0_0_rgba(0,0,0,0.05)]">
+          <div className="p-6 space-y-4">
+            {!user && (
+              <div className="p-5 rounded-[2rem] bg-indigo-50 border border-indigo-100 space-y-3">
+                <div className="flex items-center gap-2 text-indigo-600">
+                  <ShieldCheck className="w-5 h-5" />
+                  <span className="text-xs font-black uppercase tracking-widest">Tizimga kiring</span>
+                </div>
+                <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                  Suhbatlar tarixini saqlash va barcha imkoniyatlardan foydalanish uchun tizimga kiring.
+                </p>
+                <Button 
+                  onClick={() => { setAuthMode('login'); setShowAuth(true); }}
+                  className="w-full h-10 bg-white hover:bg-indigo-600 hover:text-white text-indigo-600 border border-indigo-200 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm transition-all"
+                >
+                  Kirish
+                </Button>
+              </div>
+            )}
             <Button 
               onClick={startNewChat}
-              className="w-full justify-start gap-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm"
+              className="w-full h-12 justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl shadow-lg shadow-indigo-100 transition-all active:scale-[0.98] font-bold"
             >
               <Plus className="w-4 h-4" />
-              Yangi chat
+              Yangi suhbat
             </Button>
           </div>
           <ScrollArea className="flex-1 px-4">
             <div className="space-y-1 py-2">
-              <h3 className="px-2 text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Tarix</h3>
+              <div className="flex items-center justify-between px-3 mb-4">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Suhbatlar</h3>
+                <Badge variant="outline" className="text-[9px] font-bold border-slate-100 text-slate-400">{sessions.length}</Badge>
+              </div>
               {sessions.map(session => (
-                <div 
+                <motion.div 
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
                   key={session.id}
                   onClick={() => loadSession(session)}
                   className={cn(
-                    "group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer transition-all",
-                    currentSessionId === session.id ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-600"
+                    "group flex items-center gap-3 px-4 py-3.5 rounded-2xl cursor-pointer transition-all relative overflow-hidden",
+                    currentSessionId === session.id 
+                      ? "bg-indigo-50/50 text-indigo-700 shadow-sm" 
+                      : "hover:bg-slate-50 text-slate-600"
                   )}
                 >
-                  <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
-                  <span className="text-sm font-medium truncate flex-1">{session.title}</span>
+                  {currentSessionId === session.id && (
+                    <motion.div 
+                      layoutId="active-pill"
+                      className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-indigo-600 rounded-r-full"
+                    />
+                  )}
+                  <MessageSquare className={cn("w-4 h-4 shrink-0 transition-colors", currentSessionId === session.id ? "text-indigo-600" : "opacity-40")} />
+                  <span className="text-sm font-bold truncate flex-1">{session.title}</span>
                   <button 
                     onClick={(e) => deleteSession(e, session.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-200 rounded-md transition-opacity"
+                    className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 hover:text-red-500 rounded-xl transition-all"
                   >
-                    <Trash2 className="w-3 h-3 text-slate-400 hover:text-red-500" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
-                </div>
+                </motion.div>
               ))}
               {sessions.length === 0 && (
-                <p className="text-xs text-slate-400 px-2 italic">Hali chatlar yo'q</p>
+                <div className="flex flex-col items-center justify-center py-10 px-4 text-center space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-slate-50 flex items-center justify-center">
+                    <History className="w-5 h-5 text-slate-200" />
+                  </div>
+                  <p className="text-xs text-slate-400 font-medium italic">Hali chatlar yo'q</p>
+                </div>
               )}
             </div>
           </ScrollArea>
-          <div className="p-4 border-t border-slate-100">
-            <p className="text-[10px] text-center text-slate-400 font-bold uppercase tracking-widest">Saboq AI v2.0</p>
+          <div className="p-6 border-t border-slate-50 space-y-6">
+            {user && (
+              <div className="bg-slate-50/50 p-3 rounded-2xl border border-slate-100 flex items-center gap-3">
+                <Avatar className="w-10 h-10 border-2 border-white shadow-sm">
+                  <AvatarImage src={user.photoURL || undefined} />
+                  <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-purple-500 text-white text-xs font-black">
+                    {user.displayName?.slice(0, 2).toUpperCase() || user.email?.slice(0, 2).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-black text-slate-800 truncate">{user.displayName || 'Saboqdoshi'}</p>
+                  <p className="text-[10px] text-slate-400 font-bold truncate">{user.email}</p>
+                </div>
+                <Tooltip>
+                  <TooltipTrigger render={<Button variant="ghost" size="icon" onClick={() => auth.signOut()} className="h-8 w-8 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl">
+                      <LogOut className="w-4 h-4" />
+                    </Button>} />
+                  <TooltipContent>Chiqish</TooltipContent>
+                </Tooltip>
+              </div>
+            )}
+            <div className="flex items-center justify-between px-2">
+              <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em]">Saboq AI v2.0</p>
+              <div className="flex gap-1">
+                <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="w-1 h-1 rounded-full bg-slate-200" />
+              </div>
+            </div>
           </div>
         </aside>
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col min-w-0 relative">
           {/* Header */}
-          <header className="flex items-center justify-between px-6 py-4 bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-20">
-            <div className="flex items-center gap-3">
+          <header className="flex items-center justify-between px-8 py-5 bg-white/70 backdrop-blur-xl border-b border-slate-100 sticky top-0 z-20">
+            <div className="flex items-center gap-4">
               <Sheet open={isSidebarOpen} onOpenChange={setIsSidebarOpen}>
-                <SheetTrigger render={<Button variant="ghost" size="icon" className="md:hidden rounded-xl">
-                    <Menu className="w-5 h-5" />
+                <SheetTrigger render={<Button variant="ghost" size="icon" className="md:hidden rounded-2xl bg-slate-50">
+                    <Menu className="w-5 h-5 text-slate-600" />
                   </Button>} />
-                <SheetContent side="left" className="w-72 p-0 flex flex-col">
-                  <SheetHeader className="p-4 border-b">
-                    <SheetTitle className="text-left flex items-center gap-2">
-                      <History className="w-5 h-5 text-indigo-600" />
-                      Chatlar tarixi
+                <SheetContent side="left" className="w-80 p-0 flex flex-col border-none">
+                  <SheetHeader className="p-6 border-b border-slate-50">
+                    <SheetTitle className="text-left flex items-center gap-3 font-black tracking-tight">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-600 flex items-center justify-center">
+                        <History className="w-4 h-4 text-white" />
+                      </div>
+                      Suhbatlar tarixi
                     </SheetTitle>
                   </SheetHeader>
-                  <div className="p-4">
-                    <Button onClick={startNewChat} className="w-full gap-2 bg-indigo-600 rounded-xl">
+                  <div className="p-6">
+                    <Button onClick={startNewChat} className="w-full h-12 gap-2 bg-indigo-600 rounded-2xl font-bold shadow-lg shadow-indigo-100">
                       <Plus className="w-4 h-4" /> Yangi chat
                     </Button>
                   </div>
@@ -340,12 +611,12 @@ export default function App() {
                           key={session.id}
                           onClick={() => loadSession(session)}
                           className={cn(
-                            "flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer",
-                            currentSessionId === session.id ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-600"
+                            "flex items-center gap-3 px-4 py-4 rounded-2xl cursor-pointer transition-all",
+                            currentSessionId === session.id ? "bg-indigo-50 text-indigo-700 shadow-sm" : "hover:bg-slate-50 text-slate-600"
                           )}
                         >
-                          <MessageSquare className="w-4 h-4 shrink-0" />
-                          <span className="text-sm font-medium truncate flex-1">{session.title}</span>
+                          <MessageSquare className={cn("w-4 h-4 shrink-0", currentSessionId === session.id ? "text-indigo-600" : "opacity-40")} />
+                          <span className="text-sm font-bold truncate flex-1">{session.title}</span>
                         </div>
                       ))}
                     </div>
@@ -355,23 +626,55 @@ export default function App() {
               
               <SaboqLogo isGenerating={isGenerating} />
               <div>
-                <h1 className="text-xl font-bold tracking-tight text-slate-800">Saboq AI</h1>
+                <h1 className="text-2xl font-black tracking-tighter text-slate-900">Saboq AI</h1>
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[9px] h-4 uppercase tracking-wider bg-indigo-50 text-indigo-700 border-indigo-100">
-                    {isGenerating ? 'Yozmoqda...' : 'Online'}
-                  </Badge>
-                  <span className="hidden sm:inline text-[10px] text-slate-400 font-bold uppercase tracking-widest">Uzbek • English • Russian</span>
+                  <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-100">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-[9px] font-black uppercase tracking-wider text-emerald-600">
+                      {isGenerating ? 'Yozmoqda...' : 'Online'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
             
-            <div className="flex items-center gap-2">
-              <Tooltip>
-                <TooltipTrigger render={<Button variant="ghost" size="icon" className="rounded-full text-slate-500 hover:text-indigo-600 hover:bg-indigo-50">
-                    <Globe className="w-5 h-5" />
-                  </Button>} />
-                <TooltipContent>Til sozlamalari</TooltipContent>
-              </Tooltip>
+            <div className="flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-1 mr-4">
+                <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">UZB</Badge>
+                <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">ENG</Badge>
+                <Badge variant="outline" className="text-[9px] font-black border-slate-100 text-slate-400 px-2 py-1">RUS</Badge>
+              </div>
+              
+              {!user ? (
+                <div className="flex items-center gap-3">
+                  <Button 
+                    variant="ghost" 
+                    onClick={() => { setAuthMode('login'); setShowAuth(true); }}
+                    className="text-xs font-black uppercase tracking-[0.2em] text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl px-5 h-11 transition-all"
+                  >
+                    Kirish
+                  </Button>
+                  <Button 
+                    onClick={() => { setAuthMode('signup'); setShowAuth(true); }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase tracking-[0.2em] rounded-xl px-6 h-11 shadow-xl shadow-indigo-100 transition-all active:scale-95"
+                  >
+                    Ro'yxatdan o'tish
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <div className="hidden lg:flex flex-col items-end mr-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Xush kelibsiz</span>
+                    <span className="text-sm font-bold text-slate-900">{user.displayName || 'Foydalanuvchi'}</span>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger render={<Button variant="ghost" size="icon" onClick={() => auth.signOut()} className="rounded-2xl text-slate-400 hover:text-red-600 hover:bg-red-50 transition-all">
+                        <LogOut className="w-5 h-5" />
+                      </Button>} />
+                    <TooltipContent>Chiqish</TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
             </div>
           </header>
 
@@ -386,9 +689,7 @@ export default function App() {
                     className="flex flex-col items-center justify-center py-20 text-center space-y-8"
                   >
                     <div className="relative">
-                      <div className="w-24 h-24 rounded-[2.5rem] bg-indigo-50 flex items-center justify-center text-indigo-600">
-                        <Sparkles className="w-12 h-12" />
-                      </div>
+                      <SaboqLogo isGenerating={false} />
                       <motion.div 
                         animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
                         transition={{ duration: 3, repeat: Infinity }}
@@ -396,26 +697,30 @@ export default function App() {
                       />
                     </div>
                     <div className="space-y-3">
-                      <h2 className="text-4xl font-black tracking-tight text-slate-800">Saboq berishga tayyorman!</h2>
-                      <p className="text-slate-500 max-w-md mx-auto text-lg leading-relaxed">
+                      <h2 className="text-5xl font-black tracking-tight text-slate-900">
+                        {user ? `Salom, ${user.displayName || 'Foydalanuvchi'}!` : 'Saboq berishga tayyorman!'}
+                      </h2>
+                      <p className="text-slate-500 max-w-md mx-auto text-lg font-medium leading-relaxed">
                         Men sizning shaxsiy yordamchingizman. Savol bering, rasm tashlang yoki fayllarni tahlil qilishni so'rang.
                       </p>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-xl">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl">
                       {[
-                        { icon: ImageIcon, text: 'Ushbu rasmni tasvirlab ber' },
-                        { icon: Globe, text: 'Ingliz tilida suhbatlashamiz' },
-                        { icon: FileText, text: 'PDF faylni tahlil qil' },
-                        { icon: Sparkles, text: 'Menga qiziqarli fakt ayt' }
+                        { icon: ImageIcon, text: 'Ushbu rasmni tasvirlab ber', color: 'text-blue-500', bg: 'bg-blue-50' },
+                        { icon: Globe, text: 'Ingliz tilida suhbatlashamiz', color: 'text-emerald-500', bg: 'bg-emerald-50' },
+                        { icon: FileText, text: 'PDF faylni tahlil qil', color: 'text-orange-500', bg: 'bg-orange-50' },
+                        { icon: Sparkles, text: 'Menga qiziqarli fakt ayt', color: 'text-purple-500', bg: 'bg-purple-50' }
                       ].map((item) => (
                         <Button 
                           key={item.text}
                           variant="outline" 
-                          className="group justify-start h-auto py-4 px-5 text-left border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/50 transition-all rounded-2xl"
+                          className="group justify-start h-auto py-5 px-6 text-left border-slate-100 hover:border-indigo-200 hover:bg-white hover:shadow-xl hover:shadow-indigo-500/5 transition-all rounded-[1.5rem] bg-white/50 backdrop-blur-sm"
                           onClick={() => setInput(item.text)}
                         >
-                          <item.icon className="w-5 h-5 mr-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
-                          <span className="text-sm font-semibold text-slate-600 group-hover:text-slate-900">{item.text}</span>
+                          <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center mr-4 transition-transform group-hover:scale-110", item.bg)}>
+                            <item.icon className={cn("w-5 h-5", item.color)} />
+                          </div>
+                          <span className="text-sm font-bold text-slate-700 group-hover:text-slate-900">{item.text}</span>
                         </Button>
                       ))}
                     </div>
@@ -433,16 +738,15 @@ export default function App() {
                         message.role === 'user' ? "flex-row-reverse" : "flex-row"
                       )}
                     >
-                      <Avatar className={cn(
-                        "w-10 h-10 border-2 shadow-sm shrink-0",
-                        message.role === 'user' ? "border-indigo-100" : "border-slate-100"
-                      )}>
-                        {message.role === 'user' ? (
+                      {message.role === 'user' ? (
+                        <Avatar className={cn(
+                          "w-10 h-10 border-2 shadow-sm shrink-0 border-indigo-100"
+                        )}>
                           <AvatarFallback className="bg-indigo-600 text-white"><User className="w-5 h-5" /></AvatarFallback>
-                        ) : (
-                          <AvatarFallback className="bg-slate-800 text-white"><Bot className="w-5 h-5" /></AvatarFallback>
-                        )}
-                      </Avatar>
+                        </Avatar>
+                      ) : (
+                        <SaboqLogo isGenerating={false} className="w-10 h-10 shrink-0" />
+                      )}
                       <div className={cn(
                         "flex flex-col max-w-[85%]",
                         message.role === 'user' ? "items-end" : "items-start"
@@ -469,13 +773,13 @@ export default function App() {
                           </div>
                         )}
                         <div className={cn(
-                          "px-6 py-4 rounded-2xl text-[15px] leading-relaxed shadow-sm",
+                          "px-6 py-4 rounded-[1.5rem] text-[15px] leading-relaxed shadow-sm",
                           message.role === 'user' 
-                            ? "bg-indigo-600 text-white rounded-tr-none" 
-                            : "bg-white border border-slate-200 text-slate-800 rounded-tl-none"
+                            ? "bg-indigo-600 text-white rounded-tr-none shadow-indigo-200" 
+                            : "bg-white border border-slate-100 text-slate-800 rounded-tl-none"
                         )}>
                           {message.role === 'assistant' ? (
-                            <div className="prose prose-slate max-w-none prose-p:leading-relaxed prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:bg-indigo-50 prose-code:px-1 prose-code:rounded">
+                            <div className="prose prose-slate max-w-none prose-p:leading-relaxed prose-pre:bg-slate-900 prose-pre:text-slate-100 prose-code:text-indigo-600 prose-code:bg-indigo-50 prose-code:px-1 prose-code:rounded prose-strong:text-slate-900 prose-headings:text-slate-900">
                               <ReactMarkdown>{message.content}</ReactMarkdown>
                               {index === messages.length - 1 && isGenerating && (
                                 <motion.span 
@@ -486,7 +790,7 @@ export default function App() {
                               )}
                             </div>
                           ) : (
-                            <p className="whitespace-pre-wrap font-medium">{message.content}</p>
+                            <p className="whitespace-pre-wrap font-bold">{message.content}</p>
                           )}
                         </div>
                         <span className="text-[10px] mt-2 text-slate-400 font-bold uppercase tracking-widest px-1">
@@ -497,37 +801,30 @@ export default function App() {
                   ))}
                 </AnimatePresence>
 
-                {isGenerating && messages[messages.length - 1]?.role === 'user' && (
+                {isGenerating && (
                   <motion.div 
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     className="flex gap-4"
                   >
-                    <Avatar className="w-10 h-10 border-2 border-slate-100 shadow-sm">
-                      <AvatarFallback className="bg-slate-800 text-white">
-                        <Bot className="w-5 h-5" />
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex flex-col gap-3">
-                      <div className="bg-white border border-slate-200 px-6 py-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-4">
-                        <div className="relative">
-                          <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
-                          <div className="absolute inset-0 animate-ping bg-indigo-400/20 rounded-full" />
-                        </div>
-                        <span className="text-sm text-slate-500 font-bold italic tracking-tight">{status}</span>
-                      </div>
-                      <div className="flex gap-2 px-1">
-                        {[0, 1, 2].map((i) => (
-                          <motion.div
-                            key={i}
-                            animate={{ 
-                              scale: [1, 1.5, 1],
-                              opacity: [0.4, 1, 0.4]
-                            }}
-                            transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
-                            className="w-2 h-2 rounded-full bg-indigo-500 shadow-sm"
-                          />
-                        ))}
+                    <SaboqLogo isGenerating={true} />
+                    <div className="flex flex-col gap-3 max-w-[85%]">
+                      <div className="bg-white border border-slate-100 text-slate-800 p-4 rounded-2xl rounded-tl-none shadow-sm min-w-[100px]">
+                        {streamingContent ? (
+                          <div className="prose prose-slate max-w-none prose-p:leading-relaxed">
+                            <ReactMarkdown>{streamingContent}</ReactMarkdown>
+                            <motion.span 
+                              animate={{ opacity: [1, 0, 1] }}
+                              transition={{ duration: 0.8, repeat: Infinity }}
+                              className="inline-block w-2 h-5 bg-indigo-600 ml-1 translate-y-1"
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-3">
+                            <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                            <span className="text-sm text-slate-500 font-bold italic tracking-tight">{status}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -560,76 +857,86 @@ export default function App() {
           </main>
 
           {/* Input Area */}
-          <footer className="p-6 bg-white border-t border-slate-200 z-20">
-            <div className="max-w-3xl mx-auto space-y-4">
-              {attachedFiles.length > 0 && (
-                <div className="flex flex-wrap gap-2 pb-2">
-                  {attachedFiles.map((file, i) => (
-                    <div key={i} className="relative group">
-                      {file.mimeType.startsWith('image/') ? (
-                        <img 
-                          src={`data:${file.mimeType};base64,${file.data}`} 
-                          className="w-16 h-16 object-cover rounded-xl border-2 border-indigo-100 shadow-sm"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-16 h-16 flex items-center justify-center bg-slate-50 rounded-xl border-2 border-slate-100">
-                          <FileText className="w-6 h-6 text-slate-400" />
-                        </div>
-                      )}
-                      <button 
-                        onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))}
-                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-md hover:bg-red-600 transition-colors"
+          <footer className="p-8 bg-gradient-to-t from-[#fafafa] via-[#fafafa] to-transparent z-20">
+            <div className="max-w-3xl mx-auto">
+              <Card className="relative p-2 border-none shadow-[0_20px_50px_rgba(0,0,0,0.08)] rounded-[2.5rem] bg-white/90 backdrop-blur-xl overflow-hidden">
+                {attachedFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2 p-3 bg-slate-50/50 rounded-3xl mb-2">
+                    {attachedFiles.map((file, i) => (
+                      <div key={i} className="relative group/thumb">
+                        {file.mimeType.startsWith('image/') ? (
+                          <img 
+                            src={`data:${file.mimeType};base64,${file.data}`} 
+                            alt="Thumb" 
+                            className="w-14 h-14 object-cover rounded-2xl border-2 border-white shadow-sm"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 flex items-center justify-center bg-white rounded-2xl border border-slate-100 shadow-sm">
+                            <FileText className="w-6 h-6 text-indigo-500" />
+                          </div>
+                        )}
+                        <button 
+                          onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))}
+                          className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-1 shadow-md opacity-0 group-hover/thumb:opacity-100 transition-opacity"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                <div className="flex items-end gap-2 px-2 py-1">
+                  <input 
+                    type="file" 
+                    multiple 
+                    className="hidden" 
+                    ref={fileInputRef}
+                    onChange={handleFileUpload}
+                    accept="image/*,.pdf,.txt,.doc,.docx"
+                  />
+                  <Tooltip>
+                    <TooltipTrigger render={<Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-12 w-12 shrink-0 rounded-2xl text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
+                        onClick={() => fileInputRef.current?.click()}
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              
-              <div className="relative flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Input
+                        <Paperclip className="w-5 h-5" />
+                      </Button>} />
+                    <TooltipContent>Fayl biriktirish</TooltipContent>
+                  </Tooltip>
+
+                  <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSend();
+                      }
+                    }}
                     placeholder="Saboqdan biror nima so'rang..."
-                    className="pr-24 pl-12 py-8 rounded-2xl border-slate-200 focus-visible:ring-indigo-500/20 focus-visible:border-indigo-500 bg-slate-50/50 text-base shadow-inner"
+                    className="flex-1 min-h-[48px] max-h-40 py-3 bg-transparent border-none focus-visible:ring-0 resize-none text-[15px] font-bold placeholder:text-slate-400"
+                    rows={1}
                   />
-                  <div className="absolute left-3 top-1/2 -translate-y-1/2 flex gap-1">
-                    <input 
-                      type="file" 
-                      ref={fileInputRef} 
-                      onChange={handleFileUpload} 
-                      className="hidden" 
-                      multiple 
-                      accept="image/*,application/pdf,text/*"
-                    />
-                    <Tooltip>
-                      <TooltipTrigger render={<Button 
-                          variant="ghost" 
-                          size="icon" 
-                          onClick={() => fileInputRef.current?.click()}
-                          className="w-8 h-8 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
-                        >
-                          <Paperclip className="w-5 h-5" />
-                        </Button>} />
-                      <TooltipContent>Fayl biriktirish</TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                    <Button 
-                      onClick={handleSend}
-                      disabled={(!input.trim() && attachedFiles.length === 0) || isGenerating}
-                      className="w-10 h-10 rounded-xl bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-500/20 transition-all"
-                    >
-                      <Send className="w-5 h-5" />
-                    </Button>
-                  </div>
+
+                  <Button 
+                    onClick={handleSend}
+                    disabled={(!input.trim() && attachedFiles.length === 0) || isGenerating}
+                    className={cn(
+                      "h-12 w-12 shrink-0 rounded-2xl transition-all active:scale-90 shadow-lg",
+                      input.trim() || attachedFiles.length > 0
+                        ? "bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-200" 
+                        : "bg-slate-100 text-slate-300 shadow-none"
+                    )}
+                  >
+                    {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                  </Button>
                 </div>
-              </div>
-              <p className="text-center text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em]">
+              </Card>
+              <p className="text-center text-[10px] mt-4 text-slate-400 font-black uppercase tracking-[0.3em]">
                 Saboq AI • O'zbekiston uchun maxsus
               </p>
             </div>
@@ -637,5 +944,6 @@ export default function App() {
         </div>
       </div>
     </TooltipProvider>
+  </ErrorBoundary>
   );
 }
