@@ -1,8 +1,10 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 
-const apiKey = process.env.GEMINI_API_KEY;
+// Use import.meta.env for Vite environment variables (Vercel)
+// Fallback to process.env for local AI Studio context
+const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
 if (!apiKey) {
-  console.error("GEMINI_API_KEY is missing!");
+  console.error("GEMINI_API_KEY yoki VITE_GEMINI_API_KEY topilmadi!");
 }
 
 const ai = new GoogleGenAI({ apiKey: apiKey || "" });
@@ -18,14 +20,19 @@ export const getSystemInstruction = (userName?: string) => {
   const userGreeting = userName ? `Foydalanuvchi: ${userName}.` : "";
 
   return `
-Sizning ismingiz "Saboq". O'zbekistonliklar uchun shaxsiy AI yordamchisiz.
-Javoblaringiz juda tez, aniq va lo'nda bo'lishi kerak.
-Ortiqcha gapirmang. Salomga alik oling. 
-Vaqtni faqat so'ralsa ayting: ${timeStr}.
-${userGreeting}
+Sizning ismingiz "Wisdom". O'zbekistonliklar uchun eng ilg'or va aqlli AI yordamchisiz.
+O'zbek tilida mukammal darajada javob bering. Foydalanuvchi qanday uslubda yozmasin (badiiy, she'riy, ko'cha tilida), uni to'liq tushunib, unga mos va samimiy javob bering.
+Javoblaringiz o'ta foydali va lo'nda bo'lsin.
 
-MUHIM: Faqat oddiy matn formatida javob bering. Hech qanday JSON, kodli buyruqlar yoki "action" (tool call) formatidag matnlarni ishlatmang.
-Agar foydalanuvchi rasm so'rasa, unga tizim rasm chizishini aytib, kuttiring (tizim buni avtomatik ushlaydi).
+MUHIM: 
+1. Foydalanuvchi "rasm", "chiz", "yarat", "surat" kabi so'zlarni ishlatsa, hech qachon matnli tasvir bermang, darhol rasm yaratish funksiyasini ishga tushiring.
+2. HECH QACHON "{ action: ... }" shaklidagi texnik javoblarni foydalanuvchiga ko'rsatmang. Har doim samimiy va jonli muloqot qiling.
+3. Agar foydalanuvchi biror narsani tushunarsiz so'rasa yoki so'z boyligi yetishmayotgandek tuyulsa, o'zingiz aqlli tarzda taxmin qilib, eng yaqin va to'g'ri javobni (yoki rasmni) bering. Hech qachon "aniqlik kiriting" deb foydalanuvchini charchatmang. Masalan, "eshkak" desa, uning qandayligini so'ramang, oddiy va chiroyli eshkak rasmini yarating.
+4. Rasmni yaratayotganda, foydalanuvchi nima so'ragan bo'lsa, shuni aynan va realistik tarzda tasvirlang.
+5. Rasm chizish uchun prompt tayyorlayotganda, rasm ichida HECH QANDAY matn yoki yozuvlar bo'lmasin.
+6. Agar foydalanuvchi rasm chizishni so'rasa, "Xo'p bo'ladi, hozir siz so'ragan narsani tasvirlayman..." kabi qisqa va tabiiy javob bering.
+7. Foydalanuvchi o'zi haqida yoki shaxsiy narsalari haqida gapirsa (masalan: "mening pushigim"), uni do'stona va samimiy ohangda qo'llab-quvvatlang.
+${userGreeting}
 `;
 };
 
@@ -34,18 +41,50 @@ export interface FileData {
   data: string;
 }
 
-const DEFAULT_MODEL = "gemini-3.1-flash-lite-preview";
+const DEFAULT_MODEL = "gemini-3-flash-preview";
 const IMAGE_MODEL = "gemini-2.5-flash-image";
+
+export async function generateSessionTitle(firstPrompt: string): Promise<string> {
+  try {
+    const response = await ai.models.generateContent({
+      model: DEFAULT_MODEL,
+      contents: [{ role: "user", parts: [{ text: `Ushbu xabarga asoslanib juda qisqa (2-4 so'z), mazmunli va chiroyli sarlavha yarat. Faqat sarlavhaning o'zini qaytar, qo'shtirnoqsiz. Agar rasm haqida bo'lsa, emoji qo'sh. Xabar: "${firstPrompt}"` }] }],
+      config: {
+        temperature: 0.1,
+      },
+    });
+    return response.text?.trim() || "Yangi suhbat";
+  } catch (error) {
+    console.error("Title Generation Error:", error);
+    return "Yangi suhbat";
+  }
+}
 
 export async function generateImage(prompt: string) {
   try {
+    // STEP 1: Use the text model to translate and refine the prompt into a literal, realistic description.
+    // This solves "low vocabulary" issues for Uzbek words and prevents hallucinations.
+    const refinementResponse = await ai.models.generateContent({
+      model: DEFAULT_MODEL,
+      contents: [{ role: "user", parts: [{ text: `Ushbu narsa yoki sahna haqida ingliz tilida o'ta aniq, ODDY va REALISTIK tasvirlab ber (faqat rasm yaratish uchun prompt): "${prompt}". 
+      Ko'rsatma: Faqat ob'ektning o'zini, tabiy ko'rinishini tasvirlang. 
+      HECH QANDAY futuristik, ilmiy-fantastik yoki abstrakt elementlar qo'shmang. 
+      Natija faqat inglizcha tavsif bo'lsin, masalan: "A realistic wooden boat oar leaning against a stone wall".` }] }],
+      config: { temperature: 0.1 }
+    });
+
+    const refinedPrompt = refinementResponse.text?.trim() || prompt;
+    console.log("Refined Image Prompt:", refinedPrompt);
+
+    // STEP 2: Generate the image using the high-quality literal description
     const response = await ai.models.generateContent({
       model: IMAGE_MODEL,
-      contents: [{ role: "user", parts: [{ text: `Create an image based on this description: ${prompt}` }] }],
+      contents: [{ role: "user", parts: [{ text: `A literal, realistic, high-quality photograph of: ${refinedPrompt}. 
+Focus strictly on the natural look. Plain background or natural setting. 
+NO text in the image, NO sci-fi elements, NO glowing parts, NO words.` }] }],
       config: {
         imageConfig: {
-          aspectRatio: "1:1",
-          imageSize: "512px"
+          aspectRatio: "1:1"
         }
       }
     });

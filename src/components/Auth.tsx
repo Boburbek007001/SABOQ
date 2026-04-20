@@ -84,7 +84,7 @@ export default function Auth({ initialMode = 'login', onSuccess }: { initialMode
                     <Sparkles className="w-8 h-8 text-white" />
                   </div>
                   <h2 className="text-4xl font-black tracking-tight mb-4 leading-tight">Kelajak ta'limi bugundan boshlanadi</h2>
-                  <p className="text-indigo-100 text-lg font-medium opacity-80">Saboq AI bilan bilimlaringizni yangi bosqichga olib chiqing.</p>
+                  <p className="text-indigo-100 text-lg font-medium opacity-80">Wisdom AI bilan bilimlaringizni yangi bosqichga olib chiqing.</p>
                 </div>
 
                 <div className="relative z-10 flex items-center gap-3">

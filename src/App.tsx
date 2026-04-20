@@ -8,9 +8,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Send, User, Bot, Sparkles, Loader2, Search, FileText, Globe, 
   Plus, History, Paperclip, Image as ImageIcon, Square, Trash2, 
-  Menu, X, MessageSquare, ChevronRight, LogOut, ShieldCheck, AlertCircle
+  Menu, X, MessageSquare, ChevronRight, LogOut, ShieldCheck, AlertCircle,
+  Download
 } from 'lucide-react';
-import { generateStreamingResponse, generateImage, FileData } from '@/src/lib/gemini';
+import { generateStreamingResponse, generateImage, generateSessionTitle, FileData } from '@/src/lib/gemini';
 import ReactMarkdown from 'react-markdown';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -148,56 +149,98 @@ interface ChatSession {
 }
 
 const STATUS_MESSAGES = [
-  "Javob tayyorlanmoqda...",
+  "Wisdom javob tayyorlamoqda...",
   "O'ylayapman...",
-  "Ma'lumotni tahlil qilyapman...",
-  "Siz uchun javob yozyapman...",
+  "Menga biroz vaqt bering...",
+  "Siz uchun eng yaxshi javobni yozyapman...",
+  "Kutib turing, rasm chizish oson emas..."
 ];
 
-const SaboqLogo = ({ isGenerating, className }: { isGenerating: boolean, className?: string }) => {
+const WisdomLogo = ({ isGenerating, className }: { isGenerating: boolean, className?: string }) => {
   return (
     <motion.div
       animate={isGenerating ? {
-        rotate: 360,
-      } : {}}
-      transition={isGenerating ? {
-        duration: 3,
-        repeat: Infinity,
-        ease: "linear"
-      } : {}}
+        scale: [1, 1.05, 1],
+        rotate: [0, 5, -5, 0],
+      } : {
+        scale: 1,
+        rotate: 0
+      }}
+      transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
       className={cn(
-        "relative flex items-center justify-center rounded-2xl bg-white shadow-xl shadow-indigo-500/10 overflow-hidden",
+        "relative flex items-center justify-center rounded-[1.25rem] bg-indigo-600 shadow-[0_10px_30px_rgba(79,70,229,0.3)] overflow-hidden",
         className || "w-12 h-12"
       )}
     >
-      <svg viewBox="0 0 100 100" className="w-10 h-10">
+      <svg viewBox="0 0 100 100" className="w-9 h-9">
         <defs>
-          <linearGradient id="swirlGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#4f46e5" />
-            <stop offset="100%" stopColor="#9333ea" />
-          </linearGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
         </defs>
+
+        {/* Dynamic Background Pulse */}
+        <AnimatePresence>
+          {isGenerating && (
+            <motion.circle
+              cx="50" cy="50" r="40"
+              fill="rgba(255,255,255,0.2)"
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1.5, opacity: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 2, repeat: Infinity, ease: "easeOut" }}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Abstract "W" for Wisdom - Precision Lines */}
         <motion.path
-          d="M50 10 C 70 10, 90 30, 90 50 C 90 70, 70 90, 50 90 C 30 90, 10 70, 10 50 C 10 30, 30 10, 50 10 Z M50 25 C 65 25, 75 35, 75 50 C 75 65, 65 75, 50 75 C 35 75, 25 65, 25 50 C 25 35, 35 25, 50 25 Z"
-          fill="url(#swirlGrad)"
+          d="M20 30 L 40 75 L 50 50 L 60 75 L 80 30"
+          fill="none"
+          stroke="white"
+          strokeWidth="8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          filter="url(#glow)"
           animate={isGenerating ? {
-            scale: [1, 1.1, 1],
-            opacity: [0.8, 1, 0.8],
-          } : {}}
-          transition={{ duration: 2, repeat: Infinity }}
+            strokeDasharray: ["1 150", "150 1", "1 150"],
+            strokeDashoffset: [0, -150, -300],
+          } : {
+            strokeDasharray: "150 0",
+            strokeDashoffset: 0
+          }}
+          transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
         />
-        <motion.path
-          d="M50 35 Q 65 35, 65 50 T 50 65 Q 35 65, 35 50 T 50 35"
+
+        {/* Center Eye of Wisdom - Stateful Dot */}
+        <motion.circle
+          cx="50" cy="42" r="5"
           fill="white"
           animate={isGenerating ? {
-            scale: [0.8, 1.2, 0.8],
-          } : {}}
-          transition={{ duration: 1.5, repeat: Infinity }}
+            scale: [1, 1.5, 1],
+            opacity: [0.7, 1, 0.7]
+          } : {
+            scale: 1,
+            opacity: 1
+          }}
+          transition={{ duration: 1, repeat: Infinity }}
+        />
+
+        {/* Floating Geometric Orbits */}
+        <motion.circle
+          cx="50" cy="50" r="42"
+          fill="none"
+          stroke="rgba(255,255,255,0.15)"
+          strokeWidth="1"
+          strokeDasharray="4 4"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
         />
       </svg>
-      {isGenerating && (
-        <div className="absolute inset-0 bg-indigo-500/10 animate-pulse" />
-      )}
     </motion.div>
   );
 };
@@ -358,9 +401,11 @@ export default function App() {
     // Create session if it doesn't exist and user is logged in
     if (!sessionId && user) {
       try {
-        const title = currentInput.slice(0, 30) + (currentInput.length > 30 ? '...' : '');
+        // AI-powered session naming for better context
+        const title = await generateSessionTitle(currentInput);
+
         const sessionRef = await addDoc(collection(db, 'users', user.uid, 'sessions'), {
-          title: title || (currentFiles.length > 0 ? 'Fayl yuborildi' : 'Yangi suhbat'),
+          title: title,
           timestamp: Date.now()
         });
         sessionId = sessionRef.id;
@@ -414,53 +459,108 @@ export default function App() {
         throw new Error("API kaliti topilmadi. Iltimos, AI Studio sozlamalaridan (Secrets paneli) GEMINI_API_KEY o'rnatilganligini tekshiring.");
       }
 
-      // Enhanced image generation request detection (Uzbek-friendly)
-      const inputLower = currentInput.toLowerCase();
-      const hasImageFocus = inputLower.includes('rasm') || inputLower.includes('tasvir') || inputLower.includes('rasim') || inputLower.includes('surat');
-      const hasCreateAction = inputLower.includes('chiz') || inputLower.includes('yarat') || inputLower.includes('generate') || inputLower.includes('tayyorla') || inputLower.includes('ko\'rsat') || inputLower.includes('ber');
+      // Ultra Aggressive image generation request detection
+      const inputLower = currentInput.toLowerCase().trim();
       
-      const isImageRequest = (hasImageFocus && hasCreateAction) || inputLower.includes('paint') || inputLower.includes('draw');
+      const imageKeywords = ['rasm', 'rasim', 'surat', 'tasvir', 'photo', 'image', 'picture', 'shakl'];
+      const actionKeywords = ['chiz', 'yarat', 'yartib', 'generate', 'tayyorla', 'ko\'rsat', 'ber', 'qil', 'draw', 'paint', 'tasvirlab', 'yasab'];
+      
+      const hasImageKeyword = imageKeywords.some(kw => inputLower.includes(kw));
+      const hasActionKeyword = actionKeywords.some(kw => inputLower.includes(kw));
+
+      const words = inputLower.split(/\s+/);
+      // Trigger if it's a short command with any action word, or has both image+action
+      const isImageRequest = (hasImageKeyword && hasActionKeyword) || 
+                            inputLower.startsWith('chiz') || 
+                            inputLower.startsWith('yarat') ||
+                            (hasActionKeyword && words.length <= 6 && !inputLower.includes('nima') && !inputLower.includes('qanday'));
 
       if (isImageRequest) {
-        setStatus("🎨 Nano Banana 2 rasm chizmoqda...");
-        const result = await generateImage(currentInput);
+        setStatus("🎨 Wisdom rasm yaratmoqda...");
         
-        if (result.error) throw new Error(result.error);
+        // Strictly extract core subject (Translation to "generate [subject]")
+        const keywordsToRemove = [
+          /menga/gi, /rasm(i|ini|ni|ga|da|dan)?/gi, /rasim(i|ini|ni|ga|da|dan)?/gi, 
+          /chiz(ib|ish|ar|gach|uvchi)?/gi, /ber(ing|ib|adi|gan)?/gi, 
+          /yarat(ib|ish|gan|uvchi)?/gi, /tayyorla(b|sh|gan)?/gi, 
+          /surat(i|ini|ni|ga|da|dan)?/gi, /tasvir(i|ini|ni|ga|da|dan)?/gi, 
+          /qil(ish|ib|ing|gan)?/gi, /uchun/gi, /loyiha(si)?/gi, /ko'rsat(ib|ing|gan)?/gi, /yartib/gi
+        ];
         
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: result.text || "Mana, so'ragan rasmingiz:",
-          imageUrl: result.imageUrl,
-          timestamp: Date.now()
-        };
+        let cleanedPrompt = currentInput;
+        keywordsToRemove.forEach(pattern => cleanedPrompt = cleanedPrompt.replace(pattern, ''));
+        cleanedPrompt = cleanedPrompt.trim().replace(/\s+/g, ' ').replace(/[.,!?;:]/g, '');
+        
+        // If cleaning resulted in empty string, use the original (fallback)
+        const finalPrompt = cleanedPrompt.length > 1 ? cleanedPrompt : currentInput;
 
-        if (user && sessionId) {
-          const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // Dynamic image status cycling
+        const imgStatusPool = ["🎨 Ranglar berilmoqda...", "✨ Rasm tayyor bo'lyapti...", "🖌️ Detallar aniqlashtirilyapti..."];
+        let statusIdx = 0;
+        const imgStatusInterval = setInterval(() => {
+          setStatus(imgStatusPool[statusIdx % imgStatusPool.length]);
+          statusIdx++;
+        }, 2000);
+
+        try {
+          // Send the cleaned prompt for better AI understanding (The "Translation" step)
+          const result = await generateImage(finalPrompt);
+          clearInterval(imgStatusInterval);
           
-          // Prepare message for Firestore (exclude imageUrl if it's too large for 1MB document limit)
-          const firestoreMessage: any = { ...assistantMessage };
-          const estimatedSize = JSON.stringify(firestoreMessage).length;
+          if (result.error) throw new Error(result.error);
           
-          let isStripped = false;
-          if (estimatedSize > 1000000) { // ~1MB limit
-            isStripped = true;
-            delete firestoreMessage.imageUrl;
-            firestoreMessage.content += "\n\n*(Eslatma: Rasm hajmi juda katta bo'lgani uchun tarixda saqlanmadi)*";
-            
-            // Store the original in local cache for the current session
-            localCacheRef.current[messageId] = { imageUrl: assistantMessage.imageUrl };
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: result.text || "Mana, so'ragan rasmingiz:",
+            timestamp: Date.now()
+          };
+          if (result.imageUrl) {
+            assistantMessage.imageUrl = result.imageUrl;
           }
 
-          setDoc(doc(db, 'users', user.uid, 'sessions', sessionId, 'messages', messageId), firestoreMessage)
-            .catch(err => handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages/${messageId}`));
-          
-          // If we stripped it, we MUST update state manually because onSnapshot won't have the image
-          // But even if we didn't, setMessages here provides immediate feedback
-          setMessages(prev => [...prev, { ...assistantMessage, id: messageId }]);
-        } else {
-          setMessages(prev => [...prev, assistantMessage]);
+          if (user && sessionId) {
+            const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            // CRITICAL: Always cache the image locally so history remains intact for current session
+            if (assistantMessage.imageUrl) {
+              localCacheRef.current[messageId] = { imageUrl: assistantMessage.imageUrl };
+            }
+
+            // PROACTIVE SIZE CHECK: Firestore limit is 1,048,576 bytes. 
+            // JSON string length is a good proxy for estimated document size.
+            const docToSave = { ...assistantMessage };
+            const jsonStr = JSON.stringify(docToSave);
+            
+            // If it exceeds safe limit (~1MB), save without the image but keep text
+            if (jsonStr.length > 1000000) {
+              console.warn("Message document exceeds 1MB limit. Removing imageUrl for Firestore storage.");
+              delete docToSave.imageUrl;
+            }
+
+            // Save the (potentially stripped) document
+            setDoc(doc(db, 'users', user.uid, 'sessions', sessionId, 'messages', messageId), docToSave)
+              .catch(err => {
+                // Final fallback just in case
+                if (err && typeof err === 'object' && 'message' in err && String(err.message).includes('large')) {
+                  delete docToSave.imageUrl;
+                  setDoc(doc(db, 'users', user.uid, 'sessions', sessionId, 'messages', messageId), docToSave)
+                    .catch(e => handleFirestoreError(e, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages/${messageId}`));
+                } else {
+                  handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}/sessions/${sessionId}/messages/${messageId}`);
+                }
+              });
+            
+            setMessages(prev => [...prev, { ...assistantMessage, id: messageId }]);
+          } else {
+            setMessages(prev => [...prev, assistantMessage]);
+          }
+          setIsGenerating(false);
+          setStatus('');
+          return;
+        } catch (err) {
+          clearInterval(imgStatusInterval);
+          throw err;
         }
-        return;
       }
 
       // Prepare history from CURRENT messages list (including optimistic one)
@@ -561,27 +661,21 @@ export default function App() {
         
         {/* Desktop Sidebar */}
         <aside className="hidden md:flex flex-col w-80 bg-white border-r border-slate-100 shadow-[1px_0_0_0_rgba(0,0,0,0.05)]">
-          <div className="p-6 space-y-4">
-            {!user && (
-              <div className="p-5 rounded-[2rem] bg-indigo-50 border border-indigo-100 space-y-3">
-                <div className="flex items-center gap-2 text-indigo-600">
-                  <ShieldCheck className="w-5 h-5" />
-                  <span className="text-xs font-black uppercase tracking-widest">Tizimga kiring</span>
+          <div className="p-6 border-b border-slate-50 mb-4">
+            <div className="flex items-center gap-3 mb-6">
+              <WisdomLogo isGenerating={isGenerating} className="w-10 h-10" />
+              <div>
+                <h2 className="text-xl font-black tracking-tighter text-slate-800">Wisdom</h2>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[9px] font-black uppercase text-slate-400">Advanced AI</span>
                 </div>
-                <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
-                  Suhbatlar tarixini saqlash va barcha imkoniyatlardan foydalanish uchun tizimga kiring.
-                </p>
-                <Button 
-                  onClick={() => { setAuthMode('login'); setShowAuth(true); }}
-                  className="w-full h-10 bg-white hover:bg-indigo-600 hover:text-white text-indigo-600 border border-indigo-200 rounded-xl text-xs font-black uppercase tracking-widest shadow-sm transition-all"
-                >
-                  Kirish
-                </Button>
               </div>
-            )}
+            </div>
+            
             <Button 
               onClick={startNewChat}
-              className="w-full h-12 justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl shadow-lg shadow-indigo-100 transition-all active:scale-[0.98] font-bold"
+              className="w-full h-12 justify-center gap-2 bg-indigo-600 hover:bg-black text-white rounded-2xl shadow-lg shadow-indigo-100 transition-all active:scale-[0.98] font-bold"
             >
               <Plus className="w-4 h-4" />
               Yangi suhbat
@@ -641,10 +735,10 @@ export default function App() {
                     {user.displayName?.slice(0, 2).toUpperCase() || user.email?.slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-black text-slate-800 truncate">{user.displayName || 'Saboqdoshi'}</p>
-                  <p className="text-[10px] text-slate-400 font-bold truncate">{user.email}</p>
-                </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-black text-slate-800 truncate">{user.displayName || 'Foydalanuvchi'}</p>
+                    <p className="text-[10px] text-slate-400 font-bold truncate">{user.email}</p>
+                  </div>
                 <Tooltip>
                   <TooltipTrigger render={<Button variant="ghost" size="icon" onClick={() => auth.signOut()} className="h-8 w-8 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl">
                       <LogOut className="w-4 h-4" />
@@ -654,7 +748,7 @@ export default function App() {
               </div>
             )}
             <div className="flex items-center justify-between px-2">
-              <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em]">Saboq AI v2.0</p>
+              <p className="text-[9px] text-slate-400 font-black uppercase tracking-[0.2em]">Wisdom AI v3.0</p>
               <div className="flex gap-1">
                 <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
                 <span className="w-1 h-1 rounded-full bg-slate-200" />
@@ -682,8 +776,9 @@ export default function App() {
                     </SheetTitle>
                   </SheetHeader>
                   <div className="p-6">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4 px-2">Wisdom</p>
                     <Button onClick={startNewChat} className="w-full h-12 gap-2 bg-indigo-600 rounded-2xl font-bold shadow-lg shadow-indigo-100">
-                      <Plus className="w-4 h-4" /> Yangi chat
+                      <Plus className="w-4 h-4" /> Yangi suhbat
                     </Button>
                   </div>
                   <ScrollArea className="flex-1 px-4">
@@ -706,9 +801,9 @@ export default function App() {
                 </SheetContent>
               </Sheet>
               
-              <SaboqLogo isGenerating={isGenerating} />
+              <WisdomLogo isGenerating={isGenerating} />
               <div>
-                <h1 className="text-2xl font-black tracking-tighter text-slate-900">Saboq AI</h1>
+                <h1 className="text-2xl font-black tracking-tighter text-slate-900">Wisdom</h1>
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-100">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -771,7 +866,7 @@ export default function App() {
                     className="flex flex-col items-center justify-center py-20 text-center space-y-8"
                   >
                     <div className="relative">
-                      <SaboqLogo isGenerating={false} />
+                      <WisdomLogo isGenerating={false} />
                       <motion.div 
                         animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
                         transition={{ duration: 3, repeat: Infinity }}
@@ -788,10 +883,10 @@ export default function App() {
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-2xl">
                       {[
-                        { icon: ImageIcon, text: 'Ushbu rasmni tasvirlab ber', color: 'text-blue-500', bg: 'bg-blue-50' },
+                        { icon: Sparkles, text: 'Olma rasmini chizib ber', color: 'text-red-500', bg: 'bg-red-50' },
                         { icon: Globe, text: 'Ingliz tilida suhbatlashamiz', color: 'text-emerald-500', bg: 'bg-emerald-50' },
-                        { icon: FileText, text: 'PDF faylni tahlil qil', color: 'text-orange-500', bg: 'bg-orange-50' },
-                        { icon: Sparkles, text: 'Menga qiziqarli fakt ayt', color: 'text-purple-500', bg: 'bg-purple-50' }
+                        { icon: FileText, text: 'Ushbu PDF faylni tahlil qil', color: 'text-orange-500', bg: 'bg-orange-50' },
+                        { icon: ImageIcon, text: 'Ijodiy rasm yaratish', color: 'text-pink-500', bg: 'bg-pink-50' }
                       ].map((item) => (
                         <Button 
                           key={item.text}
@@ -827,7 +922,7 @@ export default function App() {
                           <AvatarFallback className="bg-indigo-600 text-white"><User className="w-5 h-5" /></AvatarFallback>
                         </Avatar>
                       ) : (
-                        <SaboqLogo isGenerating={false} className="w-10 h-10 shrink-0" />
+                        <WisdomLogo isGenerating={false} className="w-10 h-10 shrink-0" />
                       )}
                       <div className={cn(
                         "flex flex-col max-w-[85%]",
@@ -861,13 +956,31 @@ export default function App() {
                             : "bg-white border border-slate-100 text-slate-800 rounded-tl-none"
                         )}>
                           {message.imageUrl && (
-                            <div className="mb-3 overflow-hidden rounded-xl border border-slate-100 shadow-sm">
+                            <div className="relative mb-3 group/image overflow-hidden rounded-xl border border-slate-100 shadow-sm">
                               <img 
                                 src={message.imageUrl} 
                                 alt="Generated" 
                                 className="w-full max-h-[400px] object-contain bg-slate-50"
                                 referrerPolicy="no-referrer"
                               />
+                              <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover/image:opacity-100 transition-opacity">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  className="w-full h-9 bg-white/90 hover:bg-white text-slate-900 border-none rounded-lg font-bold gap-2"
+                                  onClick={() => {
+                                    const link = document.createElement('a');
+                                    link.href = message.imageUrl!;
+                                    link.download = `saboq_ai_image_${Date.now()}.png`;
+                                    document.body.appendChild(link);
+                                    link.click();
+                                    document.body.removeChild(link);
+                                  }}
+                                >
+                                  <Download className="w-4 h-4" />
+                                  Yuklab olish
+                                </Button>
+                              </div>
                             </div>
                           )}
                           {message.role === 'assistant' ? (
@@ -885,9 +998,9 @@ export default function App() {
                             <p className="whitespace-pre-wrap font-bold">{message.content}</p>
                           )}
                         </div>
-                        <span className="text-[10px] mt-2 text-slate-400 font-bold uppercase tracking-widest px-1">
-                          {message.role === 'user' ? 'Siz' : 'Saboq'}
-                        </span>
+                          <span className="text-[10px] mt-2 text-slate-400 font-bold uppercase tracking-widest px-1">
+                            {message.role === 'user' ? 'Siz' : 'Wisdom'}
+                          </span>
                       </div>
                     </motion.div>
                   ))}
@@ -899,7 +1012,7 @@ export default function App() {
                     animate={{ opacity: 1, y: 0 }}
                     className="flex gap-4"
                   >
-                    <SaboqLogo isGenerating={true} />
+                    <WisdomLogo isGenerating={true} />
                     <div className="flex flex-col gap-3 max-w-[85%]">
                       <div className="bg-white border border-slate-100 text-slate-800 p-4 rounded-2xl rounded-tl-none shadow-sm min-w-[100px]">
                         {streamingContent ? (
@@ -1009,7 +1122,7 @@ export default function App() {
                         handleSend();
                       }
                     }}
-                    placeholder="Saboqdan biror nima so'rang..."
+                    placeholder="Wisdomdan biror nima so'rang..."
                     className="flex-1 min-h-[48px] max-h-40 py-3 bg-transparent border-none focus-visible:ring-0 resize-none text-[15px] font-bold placeholder:text-slate-400"
                     rows={1}
                   />
@@ -1029,7 +1142,7 @@ export default function App() {
                 </div>
               </Card>
               <p className="text-center text-[10px] mt-4 text-slate-400 font-black uppercase tracking-[0.3em]">
-                Saboq AI • O'zbekiston uchun maxsus
+                Wisdom AI • O'zbekiston uchun maxsus
               </p>
             </div>
           </footer>
